@@ -1,0 +1,144 @@
+#!/usr/bin/perl -w 
+use strict;
+use lib ('/home/mcampbell/lib');
+
+#use Getopt::Std;
+#use vars qw($opt_t);
+#getopts('t:');
+
+use PostData;
+
+$| = 1;
+
+use Bio::SearchIO;
+use FileHandle;
+
+
+my $usage = "
+
+USAGE: ds_data_extractor_new_parser <master org> <target org 1> <target org 2> <outfile 1> <outfile 2> 
+
+\n"; 
+
+#-----------------------------------------------------------------------------
+#----------------------------------- MAIN ------------------------------------
+#-----------------------------------------------------------------------------
+
+
+my %DATA;
+my %STR;
+my %BAD;
+
+
+die $usage unless $ARGV[2];
+
+my $M = shift @ARGV;
+my $A = shift @ARGV;
+my $B = shift @ARGV;
+
+my $i = 0;
+
+while (defined(my $file = shift @ARGV)){
+
+	parse($file, $i);
+
+	$i++;
+}
+
+#set_maxo();
+
+#PostData(\%DATA);
+
+foreach my $id (keys %DATA){
+	next if is_bad($id); # i.e. not present in all input files.
+ 
+
+	foreach my $o (sort {$a <=> $b} keys %{$DATA{$id}}){
+		my $mn;
+		my $an;
+		my $bn;
+		if     (exists($DATA{$id}{$o}{$A}) && exists($DATA{$id}{$o}{$B})){
+			# $A & $B
+			$mn = $DATA{$id}{$o}{$A}->{q};
+			$an = $DATA{$id}{$o}{$A}->{s};
+			$bn = $DATA{$id}{$o}{$B}->{s};
+			
+			my $x = $DATA{$id}{$o}{$A}->{q};
+			my $y = $DATA{$id}{$o}{$B}->{q};
+
+			die "Q NUC NOT SAME!\n" unless $x eq $y;
+
+		}
+		elsif (exists($DATA{$id}{$o}{$A})){
+			# $A only
+			$mn = $DATA{$id}{$o}{$A}->{q};
+			$an = $DATA{$id}{$o}{$A}->{s};
+			$bn = '-';
+		}
+		elsif (exists($DATA{$id}{$o}{$B})){
+			# $B only
+			$mn = $DATA{$id}{$o}{$B}->{q};
+			$an = '-';
+			$bn = $DATA{$id}{$o}{$B}->{s};
+			
+		}
+
+                $STR{$id}{M} .= $mn;
+                $STR{$id}{A} .= $an;
+                $STR{$id}{B} .= $bn;
+
+	}
+}
+
+spew();
+
+#-----------------------------------------------------------------------------
+#---------------------------------- SUBS -------------------------------------
+#-----------------------------------------------------------------------------
+sub is_bad {
+
+	my $id = shift;
+
+	my @keys = keys %{$BAD{$id}};
+	return 1 if @keys < 2;
+	return 0;
+}
+#-----------------------------------------------------------------------------
+sub spew {
+
+	foreach my $id (keys %STR){
+		print ">$id\n";
+		for (my $i = 0; $i < length($STR{$id}{M}); $i +=60){
+			print substr($M, 0, 5)." ".substr($STR{$id}{M}, $i, 60)."\n";
+			print substr($A, 0, 5)." ".substr($STR{$id}{A}, $i, 60)."\n";
+			print substr($B, 0, 5)." ".substr($STR{$id}{B}, $i, 60)."\n";
+			print "\n";
+		}
+		#print "\n";
+	}
+}
+#-----------------------------------------------------------------------------
+sub parse {
+	my $file = shift;
+	my $i    = shift;
+
+	my $fh = new FileHandle();
+	   $fh->open($file);
+
+	while (defined(my $line = <$fh>)){
+		chomp($line);
+
+		my @stuff = split(/\t/, $line);
+
+		$BAD{$stuff[2]}{$i}++;
+
+		$DATA{$stuff[2]}{$stuff[3]}{$stuff[1]} = 
+		{q => $stuff[4], s => $stuff[5]};
+
+	}
+
+
+	$fh->close();
+
+}
+#-----------------------------------------------------------------------------

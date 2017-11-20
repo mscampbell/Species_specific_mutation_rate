@@ -1,0 +1,444 @@
+#!/usr/bin/perl -w 
+use strict;
+use lib ('/home/mcampbell/lib');
+
+#use Getopt::Std;
+#use vars qw($opt_t);
+#getopts('t:');
+
+use PostData;
+
+$| = 1;
+
+use Bio::SearchIO;
+use FileHandle;
+
+
+my $usage = "
+ds_data_extractor :extracts info about 4-fold denegerate sites using TBASTX
+                   reports together with the cooresponding transcripts
+
+INPUTS: 1) A multi-fasta file consiting of transcripts from organism A
+	
+	2) A 2nd multi-fasta file consisting of orthologus transcripts from
+           organism B. Note that the two files ( A & B) must be in register
+           with one another. E.g. the 1st seq, in file 1 and the first seq in
+           file 2 must be ortologus pairs; ditto for the 2nd seq and so on.
+
+	3) a multi-TBLASTX file. This file consists of concatentated TBLASTX
+           report files, each inidividial report corresponding to a single
+           pair of orthologus transcripts drwan from files 1 & 2. The queries
+           should be from file 1; the sbjcts from file 2.
+
+	4) query organisn name
+
+	5) sbjct organisn name
+
+USAGE: ds_data_extractor <fasta file org A.> <fasta file org B> <TBLASTX file>
+
+\n"; 
+
+#-----------------------------------------------------------------------------
+#----------------------------------- MAIN ------------------------------------
+#-----------------------------------------------------------------------------
+
+die $usage unless $ARGV[1];
+
+my $q_fasta_file = $ARGV[0];
+my $s_fasta_file = $ARGV[1];
+my $blasts       = $ARGV[2];
+
+my $Q_ORG        = $ARGV[3];
+my $S_ORG        = $ARGV[4];
+
+die $usage unless $ARGV[4];
+
+my %DATA;
+my %MAXO;
+my %INDX;
+
+my $qfh = new FileHandle();
+   $qfh->open($q_fasta_file);
+
+my $sfh = new FileHandle();
+   $sfh->open($s_fasta_file);
+
+my $sio = new Bio::SearchIO(-format => 'blast',
+                            -file   => $blasts,
+                            );
+
+
+while (my $result = $sio->next_result) {
+        my $q_fasta = next_seq_entry($qfh);
+        my $s_fasta = next_seq_entry($sfh);
+	my $q_t_seq = get_seq($q_fasta);
+	my $s_t_seq = get_seq($s_fasta);
+	my $q_id    = get_id($q_fasta);
+	my $s_id    = get_id($s_fasta);
+
+	#next unless $q_id eq 'chicken_XM_416243.3';
+
+	while (my $hit = $result->next_hit) {
+		while (my $hsp = $hit->next_hsp){
+
+			my $q_strand = $hsp->strand('query');
+			my $s_strand = $hsp->strand('sbjct');
+
+
+			my $q_beg = $hsp->start('query');
+
+			unless ($q_strand == $s_strand && $q_strand == 1){
+				print STDERR "BAD HSP!\n";
+				next;
+			}
+
+			my ($q_nuc_str, $s_nuc_str) = 
+			get_it($q_id, $hsp, $q_t_seq, $s_t_seq);
+
+			get_syn_info($q_beg, $q_id, $s_id, $hsp, $q_nuc_str, $s_nuc_str);	
+		}
+        }
+}
+
+
+print_it();
+
+$qfh->close();
+$sfh->close();
+
+#-----------------------------------------------------------------------------
+#---------------------------------- SUBS -------------------------------------
+#-----------------------------------------------------------------------------
+sub get_seq {
+	my $fasta = shift;
+
+	my @stuff = split("\n", $fasta);
+
+	shift @stuff;
+
+	my $seq;
+	foreach my $line (@stuff){
+		chomp($line);
+		$seq .= $line;
+	}
+	
+	return $seq;
+}
+#-----------------------------------------------------------------------------
+sub get_id {
+        my $fasta = shift;
+
+        my @stuff = split("\n", $fasta);
+
+        my $def = shift @stuff;
+
+	my ($id) = $def =~ /^>([^\s]+)/;
+
+	return $id;
+}
+#-----------------------------------------------------------------------------
+sub next_seq_entry {
+	my $fh = shift;
+
+	$/ = "\n>";
+        while(my $line = <$fh>){
+                $line =~ s/>//;
+                $line =~ s/>$//;
+                $line = ">".$line;
+
+		$/ = "\n";
+
+                return $line;
+        }
+
+	$/ = "\n";
+
+        return 0;
+}
+#-----------------------------------------------------------------------------
+sub ft {
+
+        my $n = shift;
+
+        my $d = 8;
+        my $m;
+
+        if ($n =~ /e/){
+
+                ($m, my $e) = $n =~ /^([^e]+)e([\+\-]\d+)/;
+
+                $m = substr($m, 0, $d - length($e));
+                $m = $m.'e'.$e;
+
+        }
+        else {
+                $m = substr($n, 0, $d);
+        }
+
+
+        my $a = $d - length($m);
+
+        $m = $m." "x $a;
+
+        return $m;
+}
+#-----------------------------------------------------------------------------
+sub four_fold_degen {
+	my $aa = shift;
+
+	return 1 if $aa eq 'A';
+	return 1 if $aa eq 'R';
+	return 1 if $aa eq 'G';
+	return 1 if $aa eq 'L';
+	return 1 if $aa eq 'P';
+	return 1 if $aa eq 'S';
+	return 1 if $aa eq 'T';
+	return 1 if $aa eq 'V';
+
+	return 0;
+
+}
+#-----------------------------------------------------------------------------
+sub useable {
+	my $codon = shift;
+
+
+	
+	# A
+	return 1 if $codon eq 'GCT';
+	return 1 if $codon eq 'GCC';
+	return 1 if $codon eq 'GCA';
+	return 1 if $codon eq 'GCG';
+
+	# R 
+	return 1 if $codon eq 'CGT';
+	return 1 if $codon eq 'CGC';
+	return 1 if $codon eq 'CGA';
+	return 1 if $codon eq 'CGG';
+
+	# G
+        return 1 if $codon eq 'GGT';
+        return 1 if $codon eq 'GGC';
+        return 1 if $codon eq 'GGA';
+        return 1 if $codon eq 'GGG';
+
+	# L
+	return 1 if $codon eq 'CTT';
+	return 1 if $codon eq 'CTC';
+	return 1 if $codon eq 'CTA';
+	return 1 if $codon eq 'CTG';
+	
+	# P
+	return 1 if $codon eq 'CCT';
+	return 1 if $codon eq 'CCC';
+	return 1 if $codon eq 'CCA';
+	return 1 if $codon eq 'CCG';
+
+	# S
+	return 1 if $codon eq 'TCT';
+	return 1 if $codon eq 'TCC';
+	return 1 if $codon eq 'TCA';
+	return 1 if $codon eq 'TCG';
+	
+	# T
+	return 1 if $codon eq 'ACT';
+	return 1 if $codon eq 'ACC';
+	return 1 if $codon eq 'ACA';
+	return 1 if $codon eq 'ACG';
+	
+	# V
+	return 1 if $codon eq 'GTT';
+	return 1 if $codon eq 'GTC';
+	return 1 if $codon eq 'GTA';
+	return 1 if $codon eq 'GTG';
+
+	return 0;
+}
+#-----------------------------------------------------------------------------
+sub set_max_o {
+	my $id = shift;
+	my $o  = shift;
+
+	my $c = defined($MAXO{$id}) ? $MAXO{$id} :  0;
+
+	$MAXO{$id} = $o if $o > $c;
+ 
+}
+#-----------------------------------------------------------------------------
+sub get_it {
+        my $q_id    = shift;
+        my $hsp     = shift;
+        my $q_t_seq = shift;
+        my $s_t_seq = shift;
+
+
+        my $q_align = $hsp->seq_str('query');
+        my $s_align = $hsp->seq_str('sbjct');
+
+
+        die "Munged Alignment!\n" unless length($q_align) == length($s_align);
+
+        my @q_aa = split('', $q_align);
+        my @s_aa = split('', $s_align);
+
+        my $q_t_offset  = $hsp->start('query') - 1;
+        my $s_t_offset  = $hsp->start('sbjct') - 1;
+
+        my $q_nuc_str;
+        my $s_nuc_str;
+        my $i = 3;
+        while (my $q = shift @q_aa){
+                my $s = shift @s_aa;
+                my $q_codon = $q eq '-' ? '---' : substr($q_t_seq, $q_t_offset, 3);
+                my $s_codon = $s eq '-' ? '---' : substr($s_t_seq, $s_t_offset, 3);
+
+                $q_nuc_str .= $q_codon;
+                $s_nuc_str .= $s_codon;
+
+                $INDX{$q_id}{$i} = $q_t_offset;
+
+                increment($q, $s, \$q_t_offset, \$s_t_offset, \$i);
+		
+		$i+=3;
+
+        }
+
+        return ($q_nuc_str, $s_nuc_str);
+}
+#-----------------------------------------------------------------------------
+sub increment {
+        my $qa = shift;
+        my $sa = shift;
+        my $qo = shift;
+        my $so = shift;
+        my $i  = shift;
+
+        if    ($qa ne '-' && $sa ne '-'){
+                $$qo+=3;
+                $$so+=3;
+        }
+        elsif ($qa ne '-' && $sa eq '-'){
+                $$qo+=3;
+        }
+        elsif ($qa eq '-' && $sa ne '-'){
+                $$so+=3;
+        }
+        elsif ($qa eq '-' && $sa eq '-'){
+        }
+        else {
+                die "logic error in sub increment! qa:$qa sa:$sa\n";
+        }
+}
+#-----------------------------------------------------------------------------
+sub get_syn_info {
+        my $q_beg   = shift;
+        my $q_id    = shift;
+        my $s_id    = shift;
+        my $hsp     = shift;
+        my $q_n_str = shift;
+        my $s_n_str = shift;
+
+        my $q_align = $hsp->seq_str('query');
+        my $s_align = $hsp->seq_str('sbjct');
+
+        my @q_aa = split('', $q_align);
+        my @s_aa = split('', $s_align);
+
+
+
+        my $o = 0;
+        my $i = 0;
+        while (my $qa = shift @q_aa){
+                my $sa = shift @s_aa;
+
+                my $qn = substr($q_n_str, $o, 3);
+                my $sn = substr($s_n_str, $o, 3);
+
+                $o += 3;
+
+
+                if ($qa eq '-' || $sa eq '-'){
+                        next;
+                }
+
+                tally_syns($o, $q_id, $s_id, $qa, $qn, $sa, $sn);
+
+        }
+
+}
+#-----------------------------------------------------------------------------
+sub tally_syns {
+	my $o                      = shift;
+	my $q_id                   = shift;
+	my $s_id                   = shift;
+	my $qa                     = shift;
+	my $qn                     = shift;
+	my $sa                     = shift;
+	my $sn                     = shift;
+
+
+	return if $qa ne $sa;
+
+	return unless four_fold_degen($qa);
+
+
+	my $qn1 = substr($qn,0,1);
+	my $qn2 = substr($qn,1,1);
+	my $qn3 = substr($qn,2,1);
+
+        my $sn1 = substr($sn,0,1);
+        my $sn2 = substr($sn,1,1);
+        my $sn3 = substr($sn,2,1);
+
+
+	
+	if    ($qa eq 'A'){
+		$DATA{$q_id}{$o} = {'qn' => $qn3, 'sn' => $sn3};
+	}
+	elsif ($qa eq 'R'){
+		return unless $qn1 eq 'C' && $sn1 eq 'C';
+                $DATA{$q_id}{$o} = {'qn' => $qn3, 'sn' => $sn3};
+	}
+        elsif ($qa eq 'G'){
+              $DATA{$q_id}{$o} = {'qn' => $qn3, 'sn' => $sn3};
+        }
+        elsif ($qa eq 'L'){
+	      return unless $qn1 eq 'C' && $sn1 eq 'C';
+              $DATA{$q_id}{$o} = {'qn' => $qn3, 'sn' => $sn3};
+        }
+        elsif ($qa eq 'P'){
+              $DATA{$q_id}{$o} = {'qn' => $qn3, 'sn' => $sn3};
+        }
+        elsif ($qa eq 'S'){
+              return unless $qn1 eq 'T' && $sn1 eq 'T';
+              $DATA{$q_id}{$o} = {'qn' => $qn3, 'sn' => $sn3};
+        }
+        elsif ($qa eq 'T'){
+              $DATA{$q_id}{$o} = {'qn' => $qn3, 'sn' => $sn3};
+        }
+        elsif ($qa eq 'V'){
+              $DATA{$q_id}{$o} = {'qn' => $qn3, 'sn' => $sn3};
+              set_max_o($s_id, $o);
+        }
+	else {
+		die "logic error in sub tally_syns!\n";
+	}
+	
+}
+#-----------------------------------------------------------------------------
+sub print_it {
+
+
+	foreach my $id (keys %DATA){
+		foreach my $o (sort {$a <=> $b} keys %{$DATA{$id}}){
+			my $qn = $DATA{$id}{$o}->{qn};
+			my $sn = $DATA{$id}{$o}->{sn};
+
+			my $t_loc = $INDX{$id}{$o};
+
+			print $Q_ORG."\t".$S_ORG."\t".$id."\t".$t_loc."\t".$qn."\t".$sn."\n";
+		}
+	}	
+}
+#-----------------------------------------------------------------------------
+
